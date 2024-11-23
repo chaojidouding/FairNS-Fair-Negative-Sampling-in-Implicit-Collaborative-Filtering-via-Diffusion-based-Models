@@ -34,43 +34,45 @@ def get_feed_dict(train_entity_pairs, train_pos_set, start, end,item_type, n_neg
             pos_item = int(_)
             negitems = []
             for i in range(n):  # sample n times
-                # 负采样方式
-                # 1.随机
+                # sample type
+                # random
                 if args.rand_type == 1:
                     while True:
                         negitem = random.choice(range(n_items))
                         if negitem not in train_set[user]:
                             break
-                # 2.概率
-                # 生成随机数，285/503概率为0，218/503概率为1
-                # 生成1-503的随机数
+                # 2.mix
                 elif args.rand_type == 2:
-                    if args.dataset == "ml-2-types":
-                        rand = random.randint(1, 503)
-                        if rand <= 285:
-                            rand_type = 0
-                        else:
-                            rand_type = 1
-                    else:
-                        rand = random.randint(1, 1543)
-                        if rand <= 343:
-                            rand_type = 0
-                        else:
-                            rand_type = 1
+                    def weighted_random_choice(weights):
+                        # 累积权重
+                        cumulative_weights = []
+                        current_sum = 0
+                        for weight in weights:
+                            current_sum += weight
+                            cumulative_weights.append(current_sum)
+
+                        rand_num = random.random()
+
+                        for i, cum_weight in enumerate(cumulative_weights):
+                            if rand_num < cum_weight:
+                                return i
+
+                    total_count = sum(type_num_list)
+                    inverse_frequencies = [total_count / count for count in type_num_list]
+                    total_weight = sum(inverse_frequencies)
+                    weights = [weight / total_weight for weight in inverse_frequencies]
+                    rand_type = weighted_random_choice(weights)
                     while True:
                         negitem = random.choice(range(n_items))
-                        # print(negitem,rand_type, item_type[negitem])
                         if negitem not in train_set[user] and item_type[negitem][0] == rand_type:
                             break
-                # 3.同类型
+                # 3.same type
                 elif args.rand_type == 3:
                     pos_type = item_type[pos_item]
                     cnt = 0
                     while True:
                         cnt += 1
                         negitem = random.choice(range(n_items))
-                        # print(pos_type[0],item_type[negitem][0],negitem)
-                        # print(pos_type, negitem,item_type[negitem][0])
                         if cnt > 1000 and negitem not in train_set[user]:
                             break
                         if negitem not in train_set[user] and item_type[negitem][0] == pos_type[0]:
@@ -86,8 +88,6 @@ def get_feed_dict(train_entity_pairs, train_pos_set, start, end,item_type, n_neg
             pos_item = int(_)
             negitems = []
             for i in range(n):  # sample n times
-                #负采样方式
-                #3.同类型
                 pos_type = item_type[pos_item]
                 while True:
                     negitem = random.choice(range(n_items))
@@ -102,9 +102,6 @@ def get_feed_dict(train_entity_pairs, train_pos_set, start, end,item_type, n_neg
     feed_dict['users'] = entity_pairs[:, 0]
     feed_dict['pos_items'] = entity_pairs[:, 1]
     feed_dict['neg_items'] = sampling(entity_pairs, train_pos_set, n_negs,item_type)
-    # feed_dict['neg_items'] = torch.LongTensor(sampling(entity_pairs,
-    #                                                    train_pos_set,
-    #                                                    n_negs*K)).to(device)
     if args.run_type == 8 or args.run_type == 9:
         feed_dict['neg_items2'] = sampling2(entity_pairs, train_pos_set, n_negs,item_type)
 
@@ -112,19 +109,14 @@ def get_feed_dict(train_entity_pairs, train_pos_set, start, end,item_type, n_neg
 
 
 def merge_tensors(tensors, values):
-    # 检查输入是否有效
     if not tensors or not values or len(tensors) != len(values):
         raise ValueError("tensors 和 values 必须是非空且长度相等的列表")
 
-    # 将 values 转换为 tensor
     weights = torch.tensor(values)
     weights = weights.to(device)
-    # 确保 weights 可以广播到 tensors 中的任意张量的形状
-    # 这里假设所有 tensors 的形状相同
     shape = tensors[0].shape
     weights = weights.view(-1, *([1] * len(shape)))
 
-    # 使用加权求和来合并张量
     merged_tensor = sum(w * t for w, t in zip(weights, tensors))
 
     return merged_tensor
@@ -135,19 +127,11 @@ def get_feed_dict_by_diffution(batch,model,diffution):
     neg_items = batch['neg_items']
 
     user_embeddings, item_embeddings = model.get_embedding(batch)
-    # print("())",user_embeddings.shape, item_embeddings.shape)
-    # print(user_embeddings.shape)
     users_emb = user_embeddings[users]
     pos_items_emb = item_embeddings[pos_items]
     neg_items_emb = item_embeddings[neg_items]
-    # print(pos_items.shape)
     pos_items_squeeze = pos_items_emb.squeeze(1)
-    # print(pos_items_squeeze.shape)
-    # print("***")
     neg_diffution_emb_list = diffution.sample(pos_items_squeeze.shape,pos_items_squeeze)
-    # print(neg_items_emb.shape)
-
-    #neg_emb_list:len=K shape=[batch_size,channel]
 
     # [K, batch_size, channel]
     neg_emb_tensor = torch.stack(neg_diffution_emb_list)
@@ -158,20 +142,15 @@ def get_feed_dict_by_diffution(batch,model,diffution):
     # [batch_size, K, 1, channel]
     neg_emb_tensor = neg_emb_tensor.unsqueeze(2)
 
-    #merge neg_items_emb and neg_emb_tensor
-    # print(neg_items_emb.shape, neg_emb_tensor.shape)
     merged_tensor = torch.cat((neg_items_emb, neg_emb_tensor), dim=1)
     if args.run_type == 8 or args.run_type == 9:
         neg_items2 = batch['neg_items2']
         neg_items_emb2 = item_embeddings[neg_items2]
-    # print(merged_tensor.shape)
-    # print("merged_tensor.shap e", merged_tensor.shape)
     split_tensors = torch.split(neg_emb_tensor, 1, dim=1)
-    # 分别获取四个张量
-    tensor1 = split_tensors[0]  # 第一个张量
-    tensor2 = split_tensors[1]  # 第二个张量
-    tensor3 = split_tensors[2]  # 第三个张量
-    tensor4 = split_tensors[3]  # 第四个张量
+    tensor1 = split_tensors[0]
+    tensor2 = split_tensors[1]
+    tensor3 = split_tensors[2]
+    tensor4 = split_tensors[3]
 
     feed_dict = {}
     feed_dict['users'] = batch['users']
@@ -180,15 +159,12 @@ def get_feed_dict_by_diffution(batch,model,diffution):
     if args.run_type == 1:
         tensor_list = [tensor1, tensor2, tensor3, tensor4, neg_items_emb]
         value_list = [0.05,0.05,0.05,0.05,0.8]
-        # value_list = [0,0,0,0,1]
         feed_dict['neg_items_emb'] = merge_tensors(tensor_list, value_list)
-        # feed_dict['neg_items_emb'] = merged_tensor
     elif args.run_type == 2:
         feed_dict['neg_items_emb'] = neg_items_emb
     elif args.run_type == 3:
         feed_dict['neg_items_emb'] = neg_emb_tensor
     elif args.run_type == 4:
-        # print(tensor1)
         feed_dict['neg_items_emb'] = torch.cat((tensor1, neg_items_emb), dim=1)
     elif args.run_type == 5:
         feed_dict['neg_items_emb'] = torch.cat((tensor2, neg_items_emb), dim=1)
@@ -197,12 +173,9 @@ def get_feed_dict_by_diffution(batch,model,diffution):
     elif args.run_type == 7:
         feed_dict['neg_items_emb'] = torch.cat((tensor4, neg_items_emb), dim=1)
     elif args.run_type == 8:
-        # print(neg_items_emb.shape,neg_items_emb2.shape)
         feed_dict['neg_items_emb'] = torch.cat((neg_items_emb, neg_items_emb2), dim=1)
-
     elif args.run_type == 9:
         neg_gcn_emb_dns = []
-        # print(tensor1)
         for k in range(1):
             neg_gcn_emb_dns.append(model.dynamic_negative_sampling(user_embeddings, item_embeddings,
                                                                        users,
@@ -211,13 +184,8 @@ def get_feed_dict_by_diffution(batch,model,diffution):
         neg_gcn_emb_dns = torch.stack(neg_gcn_emb_dns, dim=1)
 
         tensor_list = [tensor1, tensor2, tensor3, tensor4, neg_gcn_emb_dns]
-        # print(tensor1)
-        # print(neg_gcn_emb_dns)
         value_list = [0.05,0.05,0.05,0.05,0.8]
-        # print(merge_tensors(tensor_list, value_list))
-        # value_list = [0,0,0,0,1]
         feed_dict['neg_items_emb'] = merge_tensors(tensor_list, value_list)
-        # feed_dict['neg_items_emb'] = torch.cat((neg_gcn_emb_dns, neg_items_emb2), dim=1)
     return feed_dict
 
 if __name__ == '__main__':
@@ -292,7 +260,6 @@ if __name__ == '__main__':
                                   user_dict['train_user_set'],
                                   s, s + args.batch_size,item_type,
                                   n_negs)
-            #通过model获取embedding
             user_embeddings,item_embeddings = model.get_embedding(batch)
             user_embeddings = user_embeddings.to(device)
             item_embeddings = item_embeddings.to(device)

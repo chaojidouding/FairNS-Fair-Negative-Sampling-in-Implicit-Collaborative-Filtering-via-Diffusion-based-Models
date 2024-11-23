@@ -10,7 +10,6 @@ import numpy as np
 import multiprocessing
 import heapq
 from time import time
-#引用全局变量
 
 cores = multiprocessing.cpu_count() // 2
 
